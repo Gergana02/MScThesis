@@ -1,0 +1,181 @@
+---
+title: "06-AL-Reduced-Model"
+author: "Geri"
+date: "2026-05-15"
+output: html_document
+---
+
+```{r}
+install.packages("ordinal")
+library(ordinal)
+library(MASS)
+library(splines)
+```
+
+
+```{r}
+df <- read.csv("swan_analysis_ready_v3.csv")
+
+df$sleep_quality <- ordered(df$sleep_quality)
+df$meno_stage <- factor(df$meno_stage, ordered = TRUE)
+df$SWANID <- factor(df$SWANID)
+df$RACE <- factor(df$RACE)
+df$presc_med <- factor(df$presc_med, levels = c(0, 1),
+                           labels = c("No", "Yes"))
+df$VMS_binary <- as.integer(df$VMS_binary)
+```
+
+```{r}
+df$INCOME <- factor(
+  df$INCOME,
+  levels = c(1,2,3,4),
+  labels = c("<20k","20-49k","50-99k","100k+")
+)
+```
+
+
+
+```{r}
+#Complete model
+##The controlled nAGQ was useful for the DHEAS model, keep it for consistency
+model_clmm2_reduced_controlled_sp <- clmm(
+  sleep_quality ~ AL_score_reduced + meno_stage + AGE_baseline + RACE + presc_med +
+    INCOME + VMS_binary + ns(CESD_score, df = 3) + (1 | SWANID),
+  data      = df,
+  link      = "logit",
+  Hess      = TRUE,
+  nAGQ      = 10,
+  control   = clmm.control(maxIter = 100, gradTol = 1e-4),
+  na.action = na.omit
+)
+
+summary(model_clmm2_reduced_controlled_sp)
+
+```
+
+```{r}
+summary(model_clmm2_reduced_controlled_sp)
+
+```
+
+```{r}
+exp(coef(model_clmm2_reduced_controlled_sp)) #odds ratios
+exp(confint(model_clmm2_reduced_controlled_sp)) #confidence intervals
+```
+```{r}
+ci_reduced <- confint(model_clmm2_reduced_controlled_sp)
+
+OR_table_reduced <- cbind(
+  OR = exp(coef(model_clmm2_reduced_controlled_sp)),
+  exp(ci_reduced)
+)
+
+OR_table_reduced
+```
+
+
+
+
+```{r}
+model_clm2 <- clm(
+  sleep_quality ~ AL_score_reduced + meno_stage + AGE_baseline + RACE + presc_med +
+    INCOME + VMS_binary + CESD_score,
+  data      = df,
+  link      = "logit",
+  na.action = na.omit
+)
+
+nominal_test(model_clm2)
+```
+
+
+```{r}
+model_clm2_partial <- clm(
+  sleep_quality ~ AL_score_reduced + meno_stage + AGE_baseline + RACE + presc_med +
+    INCOME + VMS_binary + CESD_score,
+  nominal   = ~ meno_stage + RACE + CESD_score + presc_med + 
+                INCOME,
+  data      = df,
+  link      = "logit",
+  na.action = na.omit
+)
+
+nominal_test(model_clm2_partial)
+```
+
+
+```{r}
+cat("AL_score_reduced in constrained clm:    ", coef(model_clm2)["AL_score_reduced"], "\n")
+cat("AL_score_reduced in partial clm:        ", coef(model_clm2_partial)["AL_score_reduced"], "\n")
+cat("AL_score_reduced in primary clmm:       ", model_clmm2_reduced_controlled_sp$beta["AL_score_reduced"], "\n")
+```
+
+
+#Plot predicted probs
+```{r}
+newdat_al_reduced <- expand.grid(
+  AL_score_reduced     = 0:4,
+  meno_stage   = levels(df$meno_stage)[2],           # early peri as reference
+  AGE_baseline = mean(df$AGE_baseline, na.rm = TRUE),
+  RACE         = levels(df$RACE)[1],
+  presc_med    = "No",
+  INCOME       = "20-49k",
+  VMS_binary   = 0,
+  CESD_score   = mean(df$CESD_score, na.rm = TRUE)
+)
+
+
+pred_al <- predict(model_clm2, newdata = newdat_al_reduced, type = "prob")
+pred_df <- cbind(newdat_al_reduced, as.data.frame(pred_al$fit))
+
+pred_long <- pivot_longer(pred_df,
+                          cols      = c("1","2","3","4"),
+                          names_to  = "sleep_quality",
+                          values_to = "probability")
+
+
+poor_sleep_df <- pred_long %>%
+  mutate(sleep_quality = as.numeric(sleep_quality)) %>%
+  group_by(AL_score_reduced) %>%
+  summarise(
+    poor_sleep_probability = sum(probability[sleep_quality %in% c(3, 4)]),
+    .groups = "drop"
+  )
+
+
+theme_thesis <- theme_minimal(base_size = 13) +
+  theme(
+    plot.title = element_text(face = "bold", size = 14),
+    plot.subtitle = element_text(size = 11, colour = "grey35"),
+    panel.grid.minor = element_blank(),
+    panel.grid.major.x = element_blank(),
+    legend.position = "bottom",
+    axis.title = element_text(face = "bold")
+  )
+
+ggplot(poor_sleep_df, aes(x = AL_score_reduced, y = poor_sleep_probability)) +
+  geom_line(linewidth = 1.2, colour = "#2C3E50") +
+  geom_point(size = 2.8, colour = "#2C3E50") +
+  scale_x_continuous(breaks = 0:8) +
+  scale_y_continuous(labels = scales::percent_format(accuracy = 1)) +
+  labs(
+    x = "Reduced longitudinal allostatic load score",
+    y = "Predicted probability",
+    title = "Predicted probability of poorer sleep quality",
+    subtitle = "Poorer sleep defined as sleep quality categories 3–4"
+  ) +
+  theme_thesis
+
+```
+
+
+
+```{r}
+pred <- ggpredict(
+  model_clmm2_reduced_controlled_sp,
+  terms = "AL_score_reduced"
+)
+
+plot(pred)
+```
+

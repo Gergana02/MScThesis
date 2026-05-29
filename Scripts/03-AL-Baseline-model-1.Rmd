@@ -1,0 +1,390 @@
+---
+title: "03-AL-Baseline-Model"
+author: "Geri"
+date: "2026-05-14"
+output: html_document
+---
+
+## Setup
+
+```{r}
+install.packages("ordinal")
+library(ordinal)
+library(MASS)
+library(splines)
+library(emmeans)
+library(ggplot2)
+library(tidyr)
+library(dplyr)
+library(broom)
+```
+
+## Load and prepare data
+
+```{r}
+df <- read.csv("swan_analysis_ready_v3.csv")
+
+df$sleep_quality <- ordered(df$sleep_quality)
+df$meno_stage    <- factor(df$meno_stage, ordered = TRUE)
+df$SWANID        <- factor(df$SWANID)
+df$RACE          <- factor(df$RACE)
+df$presc_med     <- factor(df$presc_med, levels = c(0, 1), labels = c("No", "Yes"))
+df$VMS_binary    <- as.integer(df$VMS_binary)
+df$INCOME        <- factor(df$INCOME, levels = c(1,2,3,4),
+                           labels = c("<20k","20-49k","50-99k","100k+"))
+```
+
+---
+
+## STEP 1: Fit the primary model (clmm with random intercept)
+# nAGQ = 10 uses a more accurate integration method than the default Laplace.
+
+```{r}
+model_clmm2_baseline_controlled_sp <- clmm(
+  sleep_quality ~ AL_score + meno_stage + AGE_baseline + RACE + presc_med +
+    INCOME + VMS_binary + ns(CESD_score, df = 3) + (1 | SWANID),
+  data      = df,
+  link      = "logit",
+  Hess      = TRUE,
+  nAGQ      = 10,
+  control   = clmm.control(maxIter = 100, gradTol = 1e-4),
+  na.action = na.omit
+)
+
+
+summary(model_clmm2_baseline_controlled_sp)
+```
+```{r}
+summary(model_clmm2_baseline_controlled_sp)
+
+```
+```{r}
+exp(coef(model_clmm2_baseline_controlled_sp)) #odds ratios
+exp(confint(model_clmm2_baseline_controlled_sp)) #confidence intervals
+```
+
+
+
+```{r}
+ci <- confint(model_clmm2_baseline_controlled_sp)
+
+OR_table <- cbind(
+  OR = exp(coef(model_clmm2_baseline_controlled_sp)),
+  exp(ci)
+)
+
+OR_table
+```
+```{r}
+pacman::p_load(ggeffects)
+
+pred <- ggpredict(
+  model_clmm2_baseline_controlled_sp,
+  terms = "AL_score"
+)
+
+plot(pred)
+```
+
+
+# Quick look at odds ratios from the primary model
+# exp(coef) converts log-odds to odds ratios
+# A value > 1 means higher odds of worse sleep; < 1 means lower odds
+
+```{r}
+exp(model_clmm2_controlled$beta)
+```
+
+---
+
+## STEP 2: Check the proportional odds assumption
+
+# The proportional odds assumption says the effect of each predictor is the
+# same across all three thresholds of sleep quality. We test this using
+# nominal_test(), which requires a clm (no random effect) version of the model.
+
+```{r}
+model_clm2 <- clm(
+  sleep_quality ~ AL_score + meno_stage + AGE_baseline + RACE + presc_med +
+    INCOME + VMS_binary + CESD_score,
+  data      = df,
+  link      = "logit",
+  na.action = na.omit
+)
+
+nominal_test(model_clm2)
+```
+
+# If any predictors are flagged (p < .05), they are to be moved into the nominal 
+# argument below. This fits a partial proportional odds model where those predictors 
+# get separate estimates per threshold, while AL_score remains constrained.
+
+```{r}
+model_clm2_partial <- clm(
+  sleep_quality ~ AL_score + meno_stage + AGE_baseline + RACE + presc_med +
+    INCOME + VMS_binary + CESD_score,
+  nominal   = ~ meno_stage + RACE + CESD_score + presc_med + 
+                INCOME,
+  data      = df,
+  link      = "logit",
+  na.action = na.omit
+)
+
+nominal_test(model_clm2_partial)
+```
+
+# Compare AL_score coefficient between constrained and partial model.
+# If they are close, the violations in the covariates were not distorting
+# the main estimate — the finding is robust.
+
+```{r}
+cat("AL_score in constrained clm:    ", coef(model_clm2)["AL_score"], "\n")
+cat("AL_score in partial clm:        ", coef(model_clm2_partial)["AL_score"], "\n")
+cat("AL_score in primary clmm:       ", model_clmm2_baseline_controlled_sp$beta["AL_score"], "\n")
+```
+
+---
+
+## STEP 3: Predicted probability plot for AL score
+
+# This is the main results plot. For each AL score value (0-8), it shows the
+# predicted probability of each sleep quality category, holding all other
+# predictors at typical/reference values.
+
+```{r}
+newdat_al <- expand.grid(
+  AL_score     = 0:8,
+  meno_stage   = levels(df$meno_stage)[2],           # early peri as reference
+  AGE_baseline = mean(df$AGE_baseline, na.rm = TRUE),
+  RACE         = levels(df$RACE)[1],
+  presc_med    = "No",
+  INCOME       = "20-49k",
+  VMS_binary   = 0,
+  CESD_score   = mean(df$CESD_score, na.rm = TRUE)
+)
+
+# Predict() does not work directly on clmm, so I use the clm version
+# The pattern will be the same; the clmm just additionally accounts for
+# between-person variance via the random intercept
+pred_al <- predict(model_clm2, newdata = newdat_al, type = "prob")
+pred_df <- cbind(newdat_al, as.data.frame(pred_al$fit))
+
+pred_long <- pivot_longer(pred_df,
+                          cols      = c("1","2","3","4"),
+                          names_to  = "sleep_quality",
+                          values_to = "probability")
+
+ggplot(pred_long, aes(x = AL_score, y = probability,
+                      colour = sleep_quality, group = sleep_quality)) +
+  geom_line(linewidth = 1) +
+  geom_point() +
+  scale_x_continuous(breaks = 0:8) +
+  labs(x      = "Allostatic Load Score",
+       y      = "Predicted Probability",
+       colour = "Sleep Quality",
+       title = "Predicted probabilities of sleep quality categories by baseline allostatic load") +
+  theme_minimal()
+```
+
+
+```{r}
+poor_sleep_df <- pred_long %>%
+  mutate(sleep_quality = as.numeric(sleep_quality)) %>%
+  group_by(AL_score) %>%
+  summarise(
+    poor_sleep_probability = sum(probability[sleep_quality %in% c(3, 4)]),
+    .groups = "drop"
+  )
+
+theme_thesis <- theme_minimal(base_size = 13) +
+  theme(
+    plot.title = element_text(face = "bold", size = 14),
+    plot.subtitle = element_text(size = 11, colour = "grey35"),
+    panel.grid.minor = element_blank(),
+    panel.grid.major.x = element_blank(),
+    legend.position = "bottom",
+    axis.title = element_text(face = "bold")
+  )
+
+ggplot(poor_sleep_df, aes(x = AL_score, y = poor_sleep_probability)) +
+  geom_line(linewidth = 1.2, colour = "#2C3E50") +
+  geom_point(size = 2.8, colour = "#2C3E50") +
+  scale_x_continuous(breaks = 0:8) +
+  scale_y_continuous(labels = scales::percent_format(accuracy = 1)) +
+  labs(
+    x = "Baseline allostatic load score",
+    y = "Predicted probability",
+    title = "Predicted probability of poorer sleep quality",
+    subtitle = "Poorer sleep defined as sleep quality categories 3–4"
+  ) +
+  theme_thesis
+```
+```{r}
+df %>%
+  filter(!is.na(AL_score), !is.na(sleep_quality)) %>%
+  count(AL_score, sleep_quality) %>%
+  group_by(AL_score) %>%
+  mutate(prop = n / sum(n)) %>%
+  ggplot(aes(x = AL_score, y = prop, fill = sleep_quality)) +
+  geom_col(width = 0.8, colour = "white", linewidth = 0.2) +
+  scale_x_continuous(breaks = 0:8) +
+  scale_y_continuous(labels = scales::percent_format()) +
+  scale_fill_viridis_d(
+    option = "C",
+    direction = -1,
+    name = "Sleep quality category"
+  ) +
+  labs(
+    x = "Baseline allostatic load score",
+    y = "Observed proportion",
+    title = "Observed sleep quality distribution",
+    subtitle = "Distribution of sleep quality categories by baseline allostatic load score"
+  ) +
+  theme_thesis
+```
+
+
+```{r}
+
+df %>%
+  filter(!is.na(AL_score), !is.na(sleep_quality)) %>%
+  count(AL_score, sleep_quality) %>%
+  group_by(AL_score) %>%
+  mutate(prop = n / sum(n)) %>%
+  ggplot(aes(
+    x = AL_score,
+    y = prop,
+    fill = sleep_quality
+  )) +
+  geom_col(position = "fill") +
+  scale_x_continuous(breaks = 0:8) +
+  scale_y_continuous(labels = scales::percent_format()) +
+  labs(
+    x = "Baseline allostatic load score",
+    y = "Observed proportion",
+    fill = "Sleep quality category",
+    title = "Observed sleep quality distribution by baseline allostatic load"
+  ) +
+  theme_minimal()
+```
+
+
+
+## STEP 4: Check linearity of CESD score
+
+# Tests whether the relationship between CESD and sleep quality is linear
+# or whether it curves. Uses a natural spline as the flexible alternative.
+# anova() compares model fit — a significant result means non-linearity.
+
+```{r}
+model_linear <- polr(
+  sleep_quality ~ CESD_score + AL_score + meno_stage +
+    AGE_baseline + RACE + presc_med + INCOME + VMS_binary,
+  data      = df,
+  Hess      = TRUE,
+  na.action = na.omit
+)
+
+model_spline <- polr(
+  sleep_quality ~ ns(CESD_score, df = 3) + AL_score + meno_stage +
+    AGE_baseline + RACE + presc_med + INCOME + VMS_binary,
+  data      = df,
+  Hess      = TRUE,
+  na.action = na.omit
+)
+
+anova(model_linear, model_spline)
+```
+
+# Plot predicted probabilities across the CESD range using the spline model
+# to visualise the shape of the relationship
+
+```{r}
+newdat_cesd <- data.frame(
+  CESD_score   = seq(min(df$CESD_score, na.rm = TRUE),
+                     max(df$CESD_score, na.rm = TRUE),
+                     length.out = 100),
+  AL_score     = mean(df$AL_score, na.rm = TRUE),
+  meno_stage   = levels(df$meno_stage)[2],
+  AGE_baseline = mean(df$AGE_baseline, na.rm = TRUE),
+  RACE         = levels(df$RACE)[1],
+  presc_med    = levels(df$presc_med)[1],
+  INCOME       = levels(df$INCOME)[2],
+  VMS_binary   = 0
+)
+
+pred_cesd <- predict(model_spline, newdata = newdat_cesd, type = "probs")
+
+cols <- c("black", "red", "green", "blue")
+matplot(newdat_cesd$CESD_score, pred_cesd,
+        type = "l", lty = 1, lwd = 2, col = cols,
+        xlab = "CES-D score", ylab = "Predicted probability",
+        main = "Predicted sleep quality probabilities across CES-D score")
+legend("right", legend = colnames(pred_cesd),
+       col = cols, lty = 1, lwd = 2, bty = "n")
+```
+```{r}
+cat("AL_score linear: ", coef(model_linear)["AL_score"], "\n")
+cat("AL_score spline: ", coef(model_spline)["AL_score"], "\n")
+```
+
+
+```{r}
+# AGE_baseline linearity check — using already-established ns(CESD_score) as base
+model_age_linear <- polr(
+  sleep_quality ~ AL_score + meno_stage + AGE_baseline + RACE + presc_med +
+    INCOME + VMS_binary + ns(CESD_score, df = 3),
+  data = df, Hess = TRUE, na.action = na.omit
+)
+
+model_age_spline <- polr(
+  sleep_quality ~ AL_score + meno_stage + ns(AGE_baseline, df = 3) + RACE + presc_med +
+    INCOME + VMS_binary + ns(CESD_score, df = 3),
+  data = df, Hess = TRUE, na.action = na.omit
+)
+
+anova(model_age_linear, model_age_spline)
+
+# Also check coefficient stability
+cat("AL_score linear AGE:  ", coef(model_age_linear)["AL_score"], "\n")
+cat("AL_score spline AGE:  ", coef(model_age_spline)["AL_score"], "\n")
+```
+
+
+---
+
+## ARCHIVE: Earlier exploratory models (not reported)
+
+# Simple model kept only to track observations lost to missingness
+# compared to the full model above
+
+```{r}
+model_clmm <- clmm(
+  sleep_quality ~ AL_score + meno_stage + AGE_baseline + (1 | SWANID),
+  data      = df,
+  link      = "logit",
+  Hess      = TRUE,
+  na.action = na.omit
+)
+
+summary(model_clmm)
+```
+
+# Version with time-varying AGE instead of AGE_baseline
+# VIF confirmed no collinearity issue but AGE_baseline kept for consistency
+# with primary model specification
+
+```{r}
+model_clmm3_controlled <- clmm(
+  sleep_quality ~ AL_score + meno_stage + AGE + RACE + presc_med +
+    INCOME + VMS_binary + CESD_score + (1 | SWANID),
+  data      = df,
+  link      = "logit",
+  Hess      = TRUE,
+  nAGQ      = 10,
+  control   = clmm.control(maxIter = 100, gradTol = 1e-4),
+  na.action = na.omit
+)
+
+summary(model_clmm3_controlled)
+```

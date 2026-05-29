@@ -1,0 +1,231 @@
+---
+title: "04-DHAS-Model"
+author: "Geri"
+date: "2026-05-14"
+output: html_document
+---
+```{r}
+install.packages("ordinal")
+library(ordinal)
+library(MASS)
+library(splines)
+```
+
+```{r}
+df <- read.csv("swan_analysis_ready_v3.csv")
+
+df$sleep_quality <- ordered(df$sleep_quality)
+df$meno_stage <- factor(df$meno_stage, ordered = TRUE)
+df$SWANID <- factor(df$SWANID)
+df$RACE <- factor(df$RACE)
+df$presc_med <- factor(df$presc_med, levels = c(0, 1),
+                           labels = c("No", "Yes"))
+df$VMS_binary <- as.integer(df$VMS_binary)
+```
+
+```{r}
+df$INCOME <- factor(
+  df$INCOME,
+  levels = c(1,2,3,4),
+  labels = c("<20k","20-49k","50-99k","100k+")
+)
+```
+
+```{r}
+model_clmm_DHEAS <- clmm(
+  sleep_quality ~ DHAS + meno_stage + AGE_baseline + RACE + presc_med + INCOME + VMS_binary + CESD_score + (1 | SWANID),
+  data = df,
+  link = "logit",
+  Hess = TRUE,
+  na.action = na.omit
+)
+
+summary(model_clmm)
+```
+
+```{r}
+model_clmm2_DHEAS <- clmm(
+  sleep_quality ~ log_DHAS + meno_stage + AGE_baseline + RACE + presc_med + INCOME + VMS_binary + CESD_score + (1 | SWANID),
+  data = df,
+  link = "logit",
+  Hess = TRUE,
+  na.action = na.omit
+)
+
+summary(model_clmm2_DHEAS)
+```
+```{r}
+
+summary(model_clmm2_DHEAS)
+```
+
+
+```{r}
+model_clmm2_DHEAS_controlled_sp <- clmm(
+  sleep_quality ~ log_DHAS + meno_stage + AGE_baseline + RACE + presc_med +
+    INCOME + VMS_binary + ns(CESD_score, df = 3) + (1 | SWANID),
+  data      = df,
+  link      = "logit",
+  Hess      = TRUE,
+  nAGQ      = 10,
+  control   = clmm.control(maxIter = 100, gradTol = 1e-4),
+  na.action = na.omit
+)
+
+
+summary(model_clmm2_DHEAS_controlled_sp)
+```
+
+```{r}
+summary(model_clmm2_DHEAS_controlled_sp)
+```
+
+```{r}
+exp(coef(model_clmm2_DHEAS_controlled_sp)) #odds ratios
+exp(confint(model_clmm2_DHEAS_controlled_sp)) #confidence intervals
+```
+
+```{r}
+ci_DHEAS <- confint(model_clmm2_DHEAS_controlled_sp)
+
+OR_table_DHEAS <- cbind(
+  OR = exp(coef(model_clmm2_DHEAS_controlled_sp)),
+  exp(ci_DHEAS)
+)
+
+OR_table_DHEAS
+```
+
+
+
+```{r}
+model_clm2 <- clm(
+  sleep_quality ~ log_DHAS + meno_stage + AGE_baseline + RACE + presc_med +
+    INCOME + VMS_binary + CESD_score,
+  data      = df,
+  link      = "logit",
+  na.action = na.omit
+)
+
+nominal_test(model_clm2)
+```
+
+```{r}
+model_clm2_partial <- clm(
+  sleep_quality ~ log_DHAS + meno_stage + AGE_baseline + RACE + presc_med +
+    INCOME + VMS_binary + CESD_score,
+  nominal   = ~ meno_stage + RACE + CESD_score + presc_med + 
+                INCOME,
+  data      = df,
+  link      = "logit",
+  na.action = na.omit
+)
+
+nominal_test(model_clm2_partial)
+```
+
+```{r}
+cat("log_DHAS in constrained clm:    ", coef(model_clm2)["log_DHAS"], "\n")
+cat("log_DHAS in partial clm:        ", coef(model_clm2_partial)["log_DHAS"], "\n")
+cat("log_DHAS in primary clmm:       ", model_clmm2_controlled_DHEAS$beta["log_DHAS"], "\n")
+```
+
+
+
+#Plot predicted probs
+```{r}
+newdat_dheas <- expand.grid(
+  log_DHAS     = seq(
+    min(df$log_DHAS, na.rm = TRUE),
+    max(df$log_DHAS, na.rm = TRUE),
+    length.out = 100
+  ),
+  meno_stage   = levels(df$meno_stage)[2],
+  AGE_baseline = mean(df$AGE_baseline, na.rm = TRUE),
+  RACE         = levels(df$RACE)[1],
+  presc_med    = "No",
+  INCOME       = "20-49k",
+  VMS_binary   = 0,
+  CESD_score   = mean(df$CESD_score, na.rm = TRUE)
+)
+
+pred_dheas <- predict(
+  model_clm2,
+  newdata = newdat_dheas,
+  type = "prob"
+)
+
+pred_df_dheas <- cbind(
+  newdat_dheas,
+  as.data.frame(pred_dheas$fit)
+)
+
+
+poor_sleep_dheas <- pred_df_dheas %>%
+  mutate(
+    poor_sleep_probability = `3` + `4`
+  )
+
+
+ggplot(
+  poor_sleep_dheas,
+  aes(x = log_DHAS, y = poor_sleep_probability)
+) +
+  geom_line(linewidth = 1.2, colour = "#2C3E50") +
+  scale_y_continuous(
+    labels = scales::percent_format(accuracy = 1)
+  ) +
+  labs(
+    x = "Log-transformed DHEAS",
+    y = "Predicted probability",
+    title = "Predicted probability of poorer sleep quality by DHEAS",
+    subtitle = "Poorer sleep defined as sleep quality categories 3–4"
+  ) +
+  theme_minimal(base_size = 13)
+
+```
+
+```{r}
+
+pred <- ggpredict(
+  model_clmm2_DHEAS_controlled_sp,
+  terms = "log_DHAS"
+)
+
+plot(pred)
+```
+
+
+
+##Checking the linnearity of the continuous log(DHAS) variable
+```{r}
+
+# log_DHAS — only for the DHEAS model
+anova(
+  polr(sleep_quality ~ log_DHAS + meno_stage + AGE_baseline + RACE + 
+         presc_med + INCOME + VMS_binary + ns(CESD_score, df=3), 
+       data=df, Hess=TRUE, na.action=na.omit),
+  polr(sleep_quality ~ ns(log_DHAS, df=3) + meno_stage + AGE_baseline + RACE + 
+         presc_med + INCOME + VMS_binary + ns(CESD_score, df=3), 
+       data=df, Hess=TRUE, na.action=na.omit)
+)
+```
+
+
+
+
+```{r}
+model_clmm2_DHEAS_controlled_sp_slope <- clmm(
+  sleep_quality ~ log_DHAS + meno_stage + AGE_baseline + RACE + presc_med +
+    INCOME + VMS_binary + ns(CESD_score, df = 3) + (1 + log_DHAS| SWANID),
+  data      = df,
+  link      = "logit",
+  Hess      = TRUE,
+  control   = clmm.control(maxIter = 100, gradTol = 1e-4),
+  na.action = na.omit
+)
+
+
+summary(model_clmm2_DHEAS_controlled_sp_slope)
+```
+
