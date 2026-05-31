@@ -12,7 +12,6 @@ install.packages("ordinal")
 library(ordinal)
 library(MASS)
 library(splines)
-library(emmeans)
 library(ggplot2)
 library(tidyr)
 library(dplyr)
@@ -117,7 +116,6 @@ nominal_test(model_clm2)
 
 # If any predictors are flagged (p < .05), they are to be moved into the nominal 
 # argument below. This fits a partial proportional odds model where those predictors 
-# get separate estimates per threshold, while AL_score remains constrained.
 
 ```{r}
 model_clm2_partial <- clm(
@@ -244,32 +242,6 @@ df %>%
 ```
 
 
-```{r}
-
-df %>%
-  filter(!is.na(AL_score), !is.na(sleep_quality)) %>%
-  count(AL_score, sleep_quality) %>%
-  group_by(AL_score) %>%
-  mutate(prop = n / sum(n)) %>%
-  ggplot(aes(
-    x = AL_score,
-    y = prop,
-    fill = sleep_quality
-  )) +
-  geom_col(position = "fill") +
-  scale_x_continuous(breaks = 0:8) +
-  scale_y_continuous(labels = scales::percent_format()) +
-  labs(
-    x = "Baseline allostatic load score",
-    y = "Observed proportion",
-    fill = "Sleep quality category",
-    title = "Observed sleep quality distribution by baseline allostatic load"
-  ) +
-  theme_minimal()
-```
-
-
-
 ## STEP 4: Check linearity of CESD score
 
 # Tests whether the relationship between CESD and sleep quality is linear
@@ -329,8 +301,22 @@ cat("AL_score spline: ", coef(model_spline)["AL_score"], "\n")
 ```
 
 
+##Checking the linnearity of the continuous AL variables using already-established ns(CESD_score) as base
 ```{r}
-# AGE_baseline linearity check — using already-established ns(CESD_score) as base
+
+# log_DHAS — only for the DHEAS model
+anova(
+  polr(sleep_quality ~ AL_score + meno_stage + AGE_baseline + RACE + 
+         presc_med + INCOME + VMS_binary + ns(CESD_score, df=3), 
+       data=df, Hess=TRUE, na.action=na.omit),
+  polr(sleep_quality ~ ns(AL_score, df=3) + meno_stage + AGE_baseline + RACE + 
+         presc_med + INCOME + VMS_binary + ns(CESD_score, df=3), 
+       data=df, Hess=TRUE, na.action=na.omit)
+)
+```
+
+```{r}
+# Then AGE_baseline linearity check
 model_age_linear <- polr(
   sleep_quality ~ AL_score + meno_stage + AGE_baseline + RACE + presc_med +
     INCOME + VMS_binary + ns(CESD_score, df = 3),
@@ -343,11 +329,23 @@ model_age_spline <- polr(
   data = df, Hess = TRUE, na.action = na.omit
 )
 
+
 anova(model_age_linear, model_age_spline)
 
 # Also check coefficient stability
 cat("AL_score linear AGE:  ", coef(model_age_linear)["AL_score"], "\n")
 cat("AL_score spline AGE:  ", coef(model_age_spline)["AL_score"], "\n")
+```
+
+```{r}
+modelsRDS <- list(
+  baseline_controlled_sp = model_clmm2_baseline_controlled_sp,
+  DHEAS_controlled_sp = model_clmm2_DHEAS_controlled_sp,
+  long_controlled_sp = model_clmm2_long_controlled_sp,
+  reduced_controlled_sp = model_clmm2_reduced_controlled_sp
+)
+
+saveRDS(modelsRDS, "clmm_models.rds")
 ```
 
 

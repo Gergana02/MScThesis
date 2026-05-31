@@ -10,6 +10,10 @@ install.packages("ordinal")
 library(ordinal)
 library(MASS)
 library(splines)
+library(ggplot2)
+library(tidyr)
+library(dplyr)
+library(broom)
 ```
 
 
@@ -179,3 +183,15 @@ pred <- ggpredict(
 plot(pred)
 ```
 
+
+##Checking the linnearity of the continuous AL_score_reduced variable
+```{r}
+anova(
+  polr(sleep_quality ~ AL_score_reduced + meno_stage + AGE_baseline + RACE + 
+         presc_med + INCOME + VMS_binary + ns(CESD_score, df=3), 
+       data=df, Hess=TRUE, na.action=na.omit),
+  polr(sleep_quality ~ ns(AL_score_reduced, df=3) + meno_stage + AGE_baseline + RACE + 
+         presc_med + INCOME + VMS_binary + ns(CESD_score, df=3), 
+       data=df, Hess=TRUE, na.action=na.omit)
+)
+```

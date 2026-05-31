@@ -9,6 +9,10 @@ install.packages("ordinal")
 library(ordinal)
 library(MASS)
 library(splines)
+library(ggplot2)
+library(tidyr)
+library(dplyr)
+library(broom)
 ```
 
 ```{r}
@@ -196,7 +200,6 @@ plot(pred)
 ```
 
 
-
 ##Checking the linnearity of the continuous log(DHAS) variable
 ```{r}
 
@@ -210,22 +213,3 @@ anova(
        data=df, Hess=TRUE, na.action=na.omit)
 )
 ```
-
-
-
-
-```{r}
-model_clmm2_DHEAS_controlled_sp_slope <- clmm(
-  sleep_quality ~ log_DHAS + meno_stage + AGE_baseline + RACE + presc_med +
-    INCOME + VMS_binary + ns(CESD_score, df = 3) + (1 + log_DHAS| SWANID),
-  data      = df,
-  link      = "logit",
-  Hess      = TRUE,
-  control   = clmm.control(maxIter = 100, gradTol = 1e-4),
-  na.action = na.omit
-)
-
-
-summary(model_clmm2_DHEAS_controlled_sp_slope)
-```
-
